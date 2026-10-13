@@ -33,25 +33,7 @@ ROBOT WALL-EEES/
     │
     ├── PISTA_A/
     │   └── pista_a.py
-    |   ├── ArduinoCommunication.py
-    |   ├── ArucoDetector.py
-    |   ├── ColorDetector.py
-    |   ├──
     │
     └── PISTA_B/
         └── pista_b.py
 ```
-
-------------------------------------------------------------------------
-
-# Pendientes
-
-Los siguientes puntos todavía deben definirse mediante pruebas y calibración:
-
--   Calcular el avance exacto por casilla
--   Calibrar los encoders
--   Determinar la relación entre pulsos y grados de giro
--   Definir los colores oficiales de la Pista B
--   Calibrar sensores de línea
--   Definir el protocolo final de comunicación Raspberry ↔ Arduino
--   Integrar y probar los módulos individualmente antes de integrarlos

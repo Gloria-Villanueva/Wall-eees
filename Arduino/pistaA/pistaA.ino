@@ -21,6 +21,9 @@
 #include <LiquidCrystal_I2C.h>
 #include <Adafruit_MPU6050.h>
 #include <Adafruit_TCS34725.h>
+#include <Adafruit_NeoPixel.h>
+#include <string.h>
+#include <stdlib.h>
 
 // PINES (AJUSTAR) 
 const int IZQ_IN1 = 4, IZQ_IN2 = 7, IZQ_PWM = 5;
@@ -29,6 +32,14 @@ const int TRIG = A0, ECHO = A1;       // ultrasonico (el que va sobre el servo)
 const int PIN_SERVO = 9;
 const int BTN_START = 2;              // boton a GND (usa INPUT_PULLUP)
 // A4 = SDA, A5 = SCL (MPU6050, TCS34725 y LCD comparten el bus I2C)
+
+// TIRA WS2812B: 8 LED en el pin digital 3.
+// LED 0-1: color del TCS34725. LED 2-7: ID ArUco en binario.
+const uint8_t LED_PIN = 3;
+const uint8_t NUM_LEDS = 8;
+const uint8_t LEDS_COLOR = 2;
+Adafruit_NeoPixel tira(NUM_LEDS, LED_PIN, NEO_GRB + NEO_KHZ800);
+
 
 // CONSTANTES (AJUSTAR) 
 const int   SERVO_FRENTE = 90, SERVO_IZQ = 170, SERVO_DER = 10;  // si salen al reves avisame 
@@ -110,13 +121,52 @@ float leerEstable() {
 }
 
 
+//  TIRA LED: mostrar color detectado en los dos primeros LED.
+void mostrarColorLED(ColorPiso color) {
+  uint32_t rgb = tira.Color(0, 0, 0);
+
+  switch (color) {
+    case C_CIAN:      rgb = tira.Color(0, 255, 255); break;
+    case C_AMARILLO:  rgb = tira.Color(255, 255, 0); break;
+    case C_NARANJA:   rgb = tira.Color(255, 80, 0); break;
+    case C_ROSA:      rgb = tira.Color(255, 0, 100); break;
+    case C_ROJO:      rgb = tira.Color(255, 0, 0); break;
+    case C_VERDE:     rgb = tira.Color(0, 255, 0); break;
+    case C_NINGUNO:
+    default:          rgb = tira.Color(0, 0, 0); break;
+  }
+
+  // Actualiza únicamente los LED 0 y 1; conserva los bits ArUco.
+  tira.setPixelColor(0, rgb);
+  tira.setPixelColor(1, rgb);
+  tira.show();
+}
+
+// Mostrar el ID ArUco en los LED 2-7 (6 bits, MSB a LSB).
+// Los LED 0 y 1 se conservan para el color del piso.
+void mostrarArucoBinario(int id) {
+  if (id < 0 || id > 49) return;
+
+  for (int bit = 5; bit >= 0; bit--) {
+    uint8_t led = 2 + (5 - bit);
+    bool encendido = (id >> bit) & 0x01;
+    tira.setPixelColor(led, encendido ? tira.Color(255, 255, 255) : 0);
+  }
+
+  tira.show();
+}
+
 //  COMUNICACION SERIAL (Pi o Monitor Serial)
 void comandoPrueba(char c);
 
 void procesarLinea(char* s) {
   if (strncmp(s, "ARUCO:", 6) == 0) {
     int id = atoi(s + 6);
-    if (arucoId < 0 && id >= 0 && id < 50) { arucoId = id; actualizarLCD(); }  // se queda fijo
+    if (arucoId < 0 && id >= 0 && id < 50) {
+      arucoId = id;
+      mostrarArucoBinario(arucoId);
+      actualizarLCD();
+    }  // se queda fijo
   } else if (strlen(s) == 1 && fase == F_ESPERA && !enPrueba) {
     comandoPrueba(s[0]);
   }
@@ -159,6 +209,7 @@ void mostrarMsg(const char* m) { strncpy(textoL0, m, 16); textoL0[16] = 0; actua
 
 void mostrarColor(ColorPiso c) {
   snprintf(textoL0, 17, "Color: %s", NOMBRE_COLOR[c]);
+  mostrarColorLED(c);
   actualizarLCD();
 }
 
@@ -349,6 +400,7 @@ void pasoExplorar() {
     moverA(d);
     pila[nPila++] = d;
     if (procesarCeldaNueva()) { 
+      rojoEncontrado = true;
       nRuta = nPila;
       for (byte k = 0; k < nPila; k++) rutaRojo[k] = pila[k];
       mostrarMsg("ROJO!");
@@ -448,6 +500,13 @@ void loop() {
 
 void setup() {
   Serial.begin(115200);
+
+  // Inicializar la tira WS2812B.
+  tira.begin();
+  tira.setBrightness(40);
+  tira.clear();
+  tira.show();
+
   pinMode(IZQ_IN1, OUTPUT); pinMode(IZQ_IN2, OUTPUT); pinMode(IZQ_PWM, OUTPUT);
   pinMode(DER_IN1, OUTPUT); pinMode(DER_IN2, OUTPUT); pinMode(DER_PWM, OUTPUT);
   pinMode(TRIG, OUTPUT); pinMode(ECHO, INPUT);
