@@ -1,59 +1,67 @@
-//  PISTA A 
+/  PISTA A (versión corregida)
 
-//  Librerías: 
-//  - Adafruit MPU6050 y Adafruit TCS34725 de Adafruit
-//  - LiquidCrystal I2C de Frank de Brabander
-//  (Wire y Servo ya vienen con el IDE
+//  Librerías:
+//  - Adafruit TCS34725
+//  - Adafruit NeoPixel
+//  (Wire y Servo ya vienen con el IDE)
 
 //  MODO PRUEBAS (en el Monitor Serial, 115200, "Nueva línea"):
-
-//    e = escanear paredes (frente/der/izq)   
+//    e = escanear paredes (frente/der/izq)
 //    c = leer color + valores crudos
-//    a = avanzar 1 casilla                   
-//    d = girar 90 der    
+//    a = avanzar 1 casilla
+//    d = girar 90 der
 //    i = girar 90 izq
-//    f = ajustar distancia con pared frontal 
-//    y = mostrar ángulo del giroscopio
+//    f = ajustar distancia con pared frontal
+//    y = mostrar conteos de encoder
+
+
+
+
+
+
+
 
 
 #include <Wire.h>
 #include <Servo.h>
-#include <LiquidCrystal_I2C.h>
-#include <Adafruit_MPU6050.h>
 #include <Adafruit_TCS34725.h>
 #include <Adafruit_NeoPixel.h>
 #include <string.h>
 #include <stdlib.h>
 
-// PINES (AJUSTAR) 
-const int IZQ_IN1 = 4, IZQ_IN2 = 7, IZQ_PWM = 5;
-const int DER_IN1 = 8, DER_IN2 = 12, DER_PWM = 6;
-const int TRIG = A0, ECHO = A1;       // ultrasonico (el que va sobre el servo)
-const int PIN_SERVO = 9;
-const int BTN_START = 2;              // boton a GND (usa INPUT_PULLUP)
-// A4 = SDA, A5 = SCL (MPU6050, TCS34725 y LCD comparten el bus I2C)
+// PINES (AJUSTAR)
+const int IZQ_IN1 = 2, IZQ_IN2 = 4, IZQ_PWM = 3;   
+const int DER_IN1 = 6, DER_IN2 = 7, DER_PWM = 5;   
+const int TRIG = 8, ECHO = 9;                    
+const int PIN_SERVO = 10;                    
+const int BTN_START = 13;                                            
+
 
 // TIRA WS2812B: 8 LED en el pin digital 3.
 // LED 0-1: color del TCS34725. LED 2-7: ID ArUco en binario.
-const uint8_t LED_PIN = 3;
+const uint8_t LED_PIN = 12;
 const uint8_t NUM_LEDS = 8;
 const uint8_t LEDS_COLOR = 2;
 Adafruit_NeoPixel tira(NUM_LEDS, LED_PIN, NEO_GRB + NEO_KHZ800);
 
 
-// CONSTANTES (AJUSTAR) 
-const int   SERVO_FRENTE = 90, SERVO_IZQ = 170, SERVO_DER = 10;  // si salen al reves avisame 
+// CONSTANTES (AJUSTAR)
+const int   SERVO_FRENTE = 90, SERVO_IZQ = 170, SERVO_DER = 10;
 const int   SERVO_ESPERA_MS = 350;       // tiempo para que el servo llegue a su posicion
 const float UMBRAL_PARED_CM = 25.0;      // menos que esto significa q hay pared
 const float DIST_FRENTE_CENTRO_CM = 10.0;
                                          // (15 cm - distancia del sensor al centro del robot)
 const int   VEL_AVANCE = 140;
-const unsigned long MS_CASILLA = 1100;   // ms para avanzar 30 cm a VEL_AVANCE
-const byte  COLORES_ESPERADOS = 4;     
-const unsigned long T_LIMITE_MS = 240000UL; 
+// El avance por casilla se controla con PULSOS_CASILLA (encoders).
 const bool  HACER_BONUS_1 = true;        // regresar al inicio por el mismo camino
 
-//  TIPOS 
+const unsigned long T_RONDA_MS   = 360000UL;
+const unsigned long MS_POR_PASO  = 1800UL;   // MIDE esto en tu pista (avance + giro + recentrado)
+const unsigned long COLCHON_MS   = 20000UL;  // margen de seguridad
+const bool ESPALDA_ES_PARED = true;
+const byte MAX_PASOS = 40;
+
+//  TIPOS
 enum Dir { NORTE, ESTE, SUR, OESTE };
 enum ColorPiso { C_NINGUNO, C_CIAN, C_AMARILLO, C_NARANJA, C_ROSA, C_ROJO, C_VERDE };
 enum Fase { F_ESPERA, F_EXPLORAR, F_IR_A_ROJO, F_REGRESO, F_FIN };
@@ -63,33 +71,32 @@ const int8_t DX[4] = { 0, 1, 0, -1 };    // NORTE=+y, ESTE=+x
 const int8_t DY[4] = { 1, 0, -1, 0 };
 const Dir ORDEN[4] = { NORTE, ESTE, SUR, OESTE };
 
-// OBJETOS Y VARIABLES 
+// OBJETOS Y VARIABLES
 Servo servo;
-Adafruit_MPU6050 mpu;
 Adafruit_TCS34725 tcs(TCS34725_INTEGRATIONTIME_50MS, TCS34725_GAIN_4X);
-LiquidCrystal_I2C lcd(0x27, 16, 2);      // si no se ve nada, prueba 0x3F
 
-float yaw = 0, gyroBias = 0;
-unsigned long tPrev = 0;
+float yaw = 0; // conservado solo para compatibilidad con los comandos antiguos
 Dir rumbo = NORTE;
 
 const byte G = 9;
 byte cx = G / 2, cy = G / 2;
 bool visitada[G][G];
 byte paredes[G][G];                      // bits: 1<<NORTE, 1<<ESTE, ... = hay pared
-Dir pila[40];  byte nPila = 0;           // camino limpio inicio -> posicion actual
-Dir rutaRojo[40]; byte nRuta = 0;        // camino limpio inicio -> rojo
+Dir pila[MAX_PASOS];     byte nPila = 0; // camino limpio inicio -> posicion actual
+Dir rutaRojo[MAX_PASOS]; byte nRuta = 0; // camino limpio inicio -> rojo
 bool rojoEncontrado = false;
 bool encontrado[4];
 int  arucoId = -1;
 unsigned long tInicio = 0;
 Fase fase = F_ESPERA;
-    
+
 float dF, dD, dI;
 char textoL0[17] = "";
 bool enPrueba = false;
 
 char bufRx[40]; byte nRx = 0;
+
+void actualizarLCD(); // ahora los mensajes salen por Serial y NeoPixel
 
 
 //  MOTORES Y ULTRASÓNICO
@@ -143,7 +150,6 @@ void mostrarColorLED(ColorPiso color) {
 }
 
 // Mostrar el ID ArUco en los LED 2-7 (6 bits, MSB a LSB).
-// Los LED 0 y 1 se conservan para el color del piso.
 void mostrarArucoBinario(int id) {
   if (id < 0 || id > 49) return;
 
@@ -193,96 +199,112 @@ void esperar(unsigned long ms) {
   while (millis() - t < ms) leerSerialPi();
 }
 
-//  LCD
-void actualizarLCD() {
-  char l0[17], l1[17], idTxt[4];
-  snprintf(l0, 17, "%-16s", textoL0);
-  if (arucoId >= 0) snprintf(idTxt, 4, "%d", arucoId); else strcpy(idTxt, "--");
-  snprintf(l1, 17, "[%c%c%c%c] ID:%-6s",
-           encontrado[0] ? 'C' : '-', encontrado[1] ? 'A' : '-',
-           encontrado[2] ? 'N' : '-', encontrado[3] ? 'R' : '-', idTxt);
-  lcd.setCursor(0, 0); lcd.print(l0);   // se reescribe sin lcd.clear() para que no parpadee
-  lcd.setCursor(0, 1); lcd.print(l1);
-}
+// MENSAJES: Serial + NeoPixel, sin LCD.
+void actualizarLCD() { /* reemplazo compatible: ya no hay LCD */ }
 
-void mostrarMsg(const char* m) { strncpy(textoL0, m, 16); textoL0[16] = 0; actualizarLCD(); }
+void mostrarMsg(const char* m) {
+  strncpy(textoL0, m, 16); textoL0[16] = 0;
+  Serial.print(F("ESTADO: ")); Serial.println(m);
+  uint32_t color = tira.Color(0, 0, 255);
+  if (strstr(m, "ERROR") || strstr(m, "SIN ROJO")) color = tira.Color(255, 0, 0);
+  else if (strstr(m, "FINAL") || strstr(m, "LISTO") || strstr(m, "BONUS")) color = tira.Color(0, 255, 0);
+  else if (strstr(m, "EXPLOR") || strstr(m, "REGRES") || strstr(m, "YENDO")) color = tira.Color(255, 120, 0);
+  for (uint8_t i = 2; i < NUM_LEDS; i++) tira.setPixelColor(i, color);
+  tira.show();
+}
 
 void mostrarColor(ColorPiso c) {
   snprintf(textoL0, 17, "Color: %s", NOMBRE_COLOR[c]);
+  Serial.print(F("COLOR: ")); Serial.println(NOMBRE_COLOR[c]);
   mostrarColorLED(c);
-  actualizarLCD();
 }
 
 void errorFatal(const char* m) {
-  lcd.clear(); lcd.print(m);
+  Serial.print(F("ERROR FATAL: ")); Serial.println(m);
+  tira.fill(tira.Color(255, 0, 0)); tira.show();
   while (1) { digitalWrite(LED_BUILTIN, !digitalRead(LED_BUILTIN)); delay(150); }
 }
 
-//  GIROSCOPIO Y MOVIMIENTO
+// ENCODERS: señal izquierda A2 (PC2) y derecha A3 (PC3).
+// En Arduino Uno se usa Pin Change Interrupt para A2/A3.
+const uint8_t ENC_IZQ = A2;
+const uint8_t ENC_DER = A3;
+volatile unsigned long pulsosIzq = 0;
+volatile unsigned long pulsosDer = 0;
+volatile uint8_t estadoEncPrevio = 0;
 
-void calibrarGiro() { 
-  float suma = 0;
-  for (int i = 0; i < 500; i++) {
-    sensors_event_t a, g, t;
-    mpu.getEvent(&a, &g, &t);
-    suma += g.gyro.z;
-    delay(3);
-  }
-  gyroBias = suma / 500.0;
-  yaw = 0;
-  tPrev = micros();
+ISR(PCINT1_vect) {
+  uint8_t estado = PINC;
+  if ((estado & _BV(PC2)) && !(estadoEncPrevio & _BV(PC2))) pulsosIzq++;
+  if ((estado & _BV(PC3)) && !(estadoEncPrevio & _BV(PC3))) pulsosDer++;
+  estadoEncPrevio = estado;
 }
 
-void actualizarYaw() {
-  sensors_event_t a, g, t;
-  mpu.getEvent(&a, &g, &t);
-  unsigned long ahora = micros();
-  float dt = (ahora - tPrev) / 1000000.0;
-  tPrev = ahora;
-  yaw -= (g.gyro.z - gyroBias) * dt * 180.0 / PI;    // derecha = positivo
-  leerSerialPi();
-}
+unsigned long contarIzq() { noInterrupts(); unsigned long n = pulsosIzq; interrupts(); return n; }
+unsigned long contarDer() { noInterrupts(); unsigned long n = pulsosDer; interrupts(); return n; }
+void reiniciarConteo() { noInterrupts(); pulsosIzq = 0; pulsosDer = 0; interrupts(); }
 
-float errorAngulo(float objetivo, float actual) {
-  float e = objetivo - actual;
-  while (e > 180)  e -= 360;
-  while (e < -180) e += 360;
-  return e;
-}
+// CALIBRAR: valores iniciales; medir con las ruedas elevadas y luego en la pista.
+const unsigned long PULSOS_CASILLA = 100; // pulsos de flanco ascendente por casilla de 30 cm
+const unsigned long PULSOS_GIRO_90 = 45;  // pulsos por rueda para un giro de 90 grados
 
-void girarAAngulo(float objetivo) {
-  tPrev = micros();
+bool avanzarPulsos(unsigned long objetivo, int vel) {
+  unsigned long iniI = contarIzq(), iniD = contarDer();
   unsigned long inicio = millis();
-  while (millis() - inicio < 3000) {
-    actualizarYaw();
-    float e = errorAngulo(objetivo, yaw);
-    if (abs(e) < 1.5) break;
-    int vel = constrain(abs(e) * 3, 70, 160);
-    if (e > 0) motores(vel, -vel); else motores(-vel, vel);
+  const unsigned long timeout = 6000;
+  while (true) {
+    unsigned long izq = contarIzq() - iniI;
+    unsigned long der = contarDer() - iniD;
+    unsigned long promedio = (izq + der) / 2;
+    if (promedio >= objetivo) break;
+    if (millis() - inicio > timeout) { parar(); Serial.println(F("ERROR: timeout encoder avance")); return false; }
+    int correccion = constrain((long)izq - (long)der, -35, 35);
+    motores(vel - correccion, vel + correccion);
   }
   parar();
+  return true;
+}
+
+bool girar90Encoder(bool derecha) {
+  unsigned long iniI = contarIzq(), iniD = contarDer();
+  unsigned long inicio = millis();
+  const unsigned long timeout = 4000;
+  while (true) {
+    unsigned long izq = contarIzq() - iniI;
+    unsigned long der = contarDer() - iniD;
+    if ((izq + der) / 2 >= PULSOS_GIRO_90) break;
+    if (millis() - inicio > timeout) { parar(); Serial.println(F("ERROR: timeout encoder giro")); return false; }
+    if (derecha) motores(110, -110); else motores(-110, 110);
+  }
+  parar();
+  delay(100);
+  return true;
 }
 
 void girarA(Dir destino) {
-  girarAAngulo(destino * 90.0);
+  int delta = ((int)destino - (int)rumbo + 4) % 4;
+  if (delta == 1) girar90Encoder(true);
+  else if (delta == 3) girar90Encoder(false);
+  else if (delta == 2) { girar90Encoder(true); girar90Encoder(true); }
   rumbo = destino;
 }
 
-// vel > 0 avanza, vel < 0 retrocede - se mantiene derecho con el giroscopio
+// Movimiento corto temporizado para correcciones de centrado; avance de casilla usa encoder.
+void actualizarYaw() { /* sin MPU6050 */ }
+
 void avanzarRecto(unsigned long ms, int vel) {
-  tPrev = micros();
-  float ang = rumbo * 90.0;
+  unsigned long iniI = contarIzq(), iniD = contarDer();
   unsigned long inicio = millis();
   while (millis() - inicio < ms) {
-    actualizarYaw();
-    float e = errorAngulo(ang, yaw);
-    int corr = constrain(e * 4, -60, 60);
-    motores(vel + corr, vel - corr);
+    long dif = (long)(contarIzq() - iniI) - (long)(contarDer() - iniD);
+    int corr = constrain((int)dif, -30, 30);
+    motores(vel - corr, vel + corr);
   }
   parar();
 }
 
-void avanzarCasilla() { avanzarRecto(MS_CASILLA, VEL_AVANCE); }
+void avanzarCasilla() { avanzarPulsos(PULSOS_CASILLA, VEL_AVANCE); }
+
 
 
 //  PAREDES: escaneo con el servo
@@ -323,6 +345,7 @@ void ajustarConFrente() {
 
 
 //  SENSOR DE COLOR (TCS34725) - AJUSTAR umbrales con TUS pistas
+//  (los tonos pueden variar según el reglamento: calibra con varias luces/tonos)
 ColorPiso leerColorUnaVez() {
   uint16_t r, g, b, c;
   tcs.getRawData(&r, &g, &b, &c);
@@ -357,6 +380,10 @@ void moverA(Dir d) {
   avanzarCasilla();
   cx += DX[d]; cy += DY[d];
 }
+void moverRecentrando(Dir d) {
+  moverA(d);
+  if (paredes[cx][cy] & (1 << rumbo)) ajustarConFrente();
+}
 
 // Se llama al llegar a una casilla NUEVA. Devuelve true si es el rojo.
 bool procesarCeldaNueva() {
@@ -369,48 +396,47 @@ bool procesarCeldaNueva() {
   escanear();
   return false;
 }
-
-byte coloresEncontrados() {
-  byte n = 0;
-  for (byte i = 0; i < 4; i++) if (encontrado[i]) n++;
-  return n;
-}
-
 bool listoParaTerminar() {
-  return rojoEncontrado &&
-         (coloresEncontrados() >= COLORES_ESPERADOS || millis() - tInicio > T_LIMITE_MS);
+  if (!rojoEncontrado) return false;
+  unsigned long usado = millis() - tInicio;
+  if (usado >= T_RONDA_MS) return true;
+  unsigned long pasos = (unsigned long)nPila + nRuta + (HACER_BONUS_1 ? nRuta : 0);
+  return (T_RONDA_MS - usado) < pasos * MS_POR_PASO + COLCHON_MS;
 }
 
 void retroceder() {                       // deshace el último movimiento de la pila
   Dir d = opuesto(pila[--nPila]);
-  moverA(d);
+  moverRecentrando(d);                 
 }
 
 void pasoExplorar() {
   if (listoParaTerminar()) { fase = F_IR_A_ROJO; return; }
 
   // 1) buscar una casilla vecina libre y sin visitar
-  for (byte i = 0; i < 4; i++) {
-    Dir d = ORDEN[i];
-    int nx = cx + DX[d], ny = cy + DY[d];
-    if (nx < 0 || ny < 0 || nx >= G || ny >= G) continue;
-    if (visitada[nx][ny]) continue;
-    if (paredes[cx][cy] & (1 << d)) continue;
+  //    [CAMBIO 5] si la pila está llena no se avanza más: se retrocede
+  if (nPila < MAX_PASOS) {
+    for (byte i = 0; i < 4; i++) {
+      Dir d = ORDEN[i];
+      int nx = cx + DX[d], ny = cy + DY[d];
+      if (nx < 0 || ny < 0 || nx >= G || ny >= G) continue;
+      if (visitada[nx][ny]) continue;
+      if (paredes[cx][cy] & (1 << d)) continue;
 
-    moverA(d);
-    pila[nPila++] = d;
-    if (procesarCeldaNueva()) { 
-      rojoEncontrado = true;
-      nRuta = nPila;
-      for (byte k = 0; k < nPila; k++) rutaRojo[k] = pila[k];
-      mostrarMsg("ROJO!");
-      if (listoParaTerminar()) {
-        fase = HACER_BONUS_1 ? F_REGRESO : F_FIN;
-      } else {
-        retroceder();                     // faltan colores
+      moverA(d);
+      pila[nPila++] = d;
+      if (procesarCeldaNueva()) {
+        rojoEncontrado = true;
+        nRuta = nPila;
+        for (byte k = 0; k < nPila; k++) rutaRojo[k] = pila[k];
+        mostrarMsg("ROJO!");
+        if (listoParaTerminar()) {
+          fase = HACER_BONUS_1 ? F_REGRESO : F_FIN;
+        } else {
+          retroceder();                   // sigue explorando (colores, ArUco, obstáculos)
+        }
       }
+      return;
     }
-    return;
   }
 
   // 2) sin opciones: retroceder o terminar
@@ -421,12 +447,18 @@ void pasoExplorar() {
   }
   retroceder();
 }
-
-// Vuelve al inicio por la pila y luego repite el camino limpio hasta el rojo
 void irARojo() {
   mostrarMsg("YENDO A ROJO");
-  while (nPila > 0) retroceder();
-  for (byte i = 0; i < nRuta; i++) { moverA(rutaRojo[i]); pila[nPila++] = rutaRojo[i]; }
+
+  byte comun = 0;
+  while (comun < nPila && comun < nRuta && pila[comun] == rutaRojo[comun]) comun++;
+
+  while (nPila > comun) retroceder();
+
+  for (byte i = comun; i < nRuta; i++) {
+    moverRecentrando(rutaRojo[i]);        // [CAMBIO 4]
+    pila[nPila++] = rutaRojo[i];
+  }
   mostrarMsg("FINAL: ROJO");
   fase = HACER_BONUS_1 ? F_REGRESO : F_FIN;
 }
@@ -441,18 +473,18 @@ void regresar() {
 
 
 //  RONDA Y MODO PRUEBAS
+// El tiempo de ronda (tInicio) se toma al presionar START, antes de calibrar.
 void iniciarRonda() {
   memset(visitada, 0, sizeof(visitada));
   memset(paredes, 0, sizeof(paredes));
   memset(encontrado, 0, sizeof(encontrado));
   nPila = 0; nRuta = 0; rojoEncontrado = false; arucoId = -1;
   cx = G / 2; cy = G / 2;
-  yaw = 0; rumbo = NORTE; tPrev = micros();
+  yaw = 0; rumbo = NORTE;
   servo.write(SERVO_FRENTE);
   Serial.println("MODE:ARUCO");          // le dice a la Pi que busque el marcador
-  tInicio = millis();
   procesarCeldaNueva();
-  paredes[cx][cy] |= (1 << opuesto(rumbo));   // la espalda del robot es pared
+  if (ESPALDA_ES_PARED) paredes[cx][cy] |= (1 << opuesto(rumbo));   // [CAMBIO 6]
   fase = F_EXPLORAR;
 }
 
@@ -479,7 +511,7 @@ void comandoPrueba(char c) {
     case 'd': girarA((Dir)((rumbo + 1) % 4)); break;
     case 'i': girarA((Dir)((rumbo + 3) % 4)); break;
     case 'f': ajustarConFrente(); break;
-    case 'y': Serial.print("yaw = "); Serial.println(yaw); break;
+    case 'y': Serial.print("Pulsos I/D: "); Serial.print(contarIzq()); Serial.print(" / "); Serial.println(contarDer()); break;
   }
   enPrueba = false;
 }
@@ -489,7 +521,14 @@ void loop() {
   switch (fase) {
     case F_ESPERA:
       parar();
-      if (digitalRead(BTN_START) == LOW) { delay(50); iniciarRonda(); }
+      if (digitalRead(BTN_START) == LOW) {
+        delay(50);
+        tInicio = millis();              
+        mostrarMsg("SUELTA ROBOT");     
+        esperar(1500);
+        mostrarMsg("ENCODERS LISTOS");
+        iniciarRonda();
+      }
       break;
     case F_EXPLORAR:   pasoExplorar(); break;
     case F_IR_A_ROJO:  irARojo();      break;
@@ -517,14 +556,13 @@ void setup() {
   servo.write(SERVO_FRENTE);
 
   Wire.begin();
-  lcd.init(); lcd.backlight();
   mostrarMsg("INICIANDO...");
 
-  if (!mpu.begin()) errorFatal("Falla MPU6050");
   if (!tcs.begin()) errorFatal("Falla TCS34725");
 
+  pinMode(ENC_IZQ, INPUT_PULLUP); pinMode(ENC_DER, INPUT_PULLUP);
+  estadoEncPrevio = PINC;
+  PCICR |= _BV(PCIE1); PCMSK1 |= _BV(PCINT10) | _BV(PCINT11);
   delay(500);
-  mostrarMsg("CALIBRANDO GIRO");
-  calibrarGiro();
   mostrarMsg("LISTO: PULSA START");
 }
