@@ -38,12 +38,3 @@ ROBOT WALL-EEES/
         └── pista_b.py
 ```
 ------------------------------------------------------------------------
-
-# Orden de pruebas
-
-1. Compilación: verifica que cada archivo .ino compile por separado.
-2. Encoders: levanta las ruedas y comprueba que ambos motores generen pulsos.
-3. Giros: prueba 90° a la derecha y a la izquierda.
-4. Avance: calibra una casilla de 30 cm.
-5. Sensores: verifica el ultrasónico, los colores y la tira NeoPixel.
-6. Pista completa: prueba primero la exploración de Pista A y después la captura de pelota de Pista B.

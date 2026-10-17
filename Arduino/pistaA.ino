@@ -14,14 +14,6 @@
 //    f = ajustar distancia con pared frontal
 //    y = mostrar conteos de encoder
 
-
-
-
-
-
-
-
-
 #include <Wire.h>
 #include <Servo.h>
 #include <Adafruit_TCS34725.h>
